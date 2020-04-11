@@ -1,0 +1,227 @@
+---
+title: "Milestone_report2"
+author: "Ellen Bayens"
+date: "7th of March 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE, cache=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+In this assignment I will show some basic summaries of the 3 downloaded files:  blogs, news and tweets. I will discuss the size of the files, as well the count of words and lines. Furthermore I try to illustrate some important summaries of the data by making plots and tables. 
+Then I will create tokens of the datasets (list of all words that appear in the dataset together with how often they appear), as well as 2-grams (list of all contiguous sequences of 2 words that appear in the dataset and how often this combination appears) and 3-grams (same as 2-grams, but then with sequences of 3 words). These tokens and n-grams are used to make a final model to predict a next word, given the first 1, 2 or 3 words, which will be given in a next assignment. 
+
+## 1. Get the data
+
+First we load the data from the given URL, and store it in the file "dataset.zip". Since the data is in zip format, we need to unzip the data. We can do this using the "unzip" function. 
+
+```{r echo = FALSE, warning = FALSE, message=FALSE}
+#Loading the packages
+library(readr)
+library(textclean)
+library(tibble)
+library(kableExtra)
+library(tidytext)
+library(quanteda)
+library(downloader)
+library(dplyr)
+library(knitr)
+```
+
+```{r download, eval = FALSE, message=FALSE}
+#Download the data
+fileURL <- "https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip"
+download(fileURL, dest="dataset.zip", mode="wb") 
+outDir<-"./data"
+unzip("./dataset.zip",exdir=outDir)
+```
+
+To read the texts, we use the function "read_lines". We store the texts in the files data_blogs, data_twitter and data_news. 
+
+```{r read}
+#Read the data
+data_blogs <- read_lines("./data/final/en_US/en_US.blogs.txt") 
+data_twitter <- read_lines("./data/final/en_US/en_US.twitter.txt")
+data_news <- read_lines("./data/final/en_US/en_US.news.txt")
+```
+
+## 2. Some basic exploration of the data
+We start with some basic exploration of the text files. We will explore: 
+
+- Size of the file
+- Total number of words in the file
+- Number of different words in the file
+- Number of text documents in one file (these are the lines, the different blogs/tweets/news feeds)
+
+```{r info, cache = TRUE}
+#Make tokenizations of text
+blogs <- tibble(line = 1:length(data_blogs), text = data_blogs) %>% 
+                unnest_tokens(word, text)
+twitter <- tibble(line = 1:length(data_twitter), text = data_twitter) %>% 
+                unnest_tokens(word, text)
+news <- tibble(line = 1:length(data_news), text = data_news) %>% 
+                unnest_tokens(word, text)
+
+texts <- list(data_blogs, data_twitter, data_news)
+texts_tokens <- list(blogs, twitter, news)
+files_info <- matrix(0, nrow = 3, ncol = 4, dimnames = list(c("blogs", "news", "twitter"),c("Size of file (Mb)", "Total words", "Total different words",  "Number of texts in file")))
+for (i in 1:3){
+  files_info[i,1] <- format(object.size(texts[[i]]), units = "Mb")
+  files_info[i,2] <- length(texts_tokens[[i]]$word)
+  files_info[i,3] <- length(unique(texts_tokens[[i]]$word))
+  files_info[i,4] <- length(texts[[i]])
+}
+
+#Print the summary in a nice format
+kable(files_info) %>% 
+        kable_styling()
+```
+
+```{r empty_memory}
+#Make the memory empty to provide some space for the rest of the calculations
+rm(list=setdiff(ls(), c("data_blogs", "data_twitter", "data_news")))
+gc()
+
+```
+
+## 3. Make samples, make corpus and tokens from this samples
+
+Above we've seen the enormous size of the files. To handle this size, we need to work with samples of the data. In this case we work with a 1% sample of the original data.
+
+
+```{r samples}
+#Make samples
+set.seed(12345)
+blogs_sample <- sample(data_blogs, size = length(data_blogs) * .01)
+twitter_sample <- sample(data_twitter, size = length(data_twitter) * .01)
+news_sample <- sample(data_news, size = length(data_news) * .01)
+
+#Make a dataframe of the datasets, made of the text and an index, and give the dataframe rownames
+blogs_sample <- data.frame(id = 1:length(blogs_sample), text = blogs_sample, type = "blogs", stringsAsFactors = FALSE)
+twitter_sample <- data.frame(id = 1:length(twitter_sample), text = twitter_sample, type = "twitter", stringsAsFactors = FALSE)
+news_sample <- data.frame(id = 1:length(news_sample), text = news_sample, type = "news", stringsAsFactors = FALSE)
+
+row.names(blogs_sample) <- paste("blogs", blogs_sample$id, sep = "_")
+row.names(twitter_sample) <- paste("twitter", twitter_sample$id, sep = "_")
+row.names(news_sample) <- paste("news", news_sample$id, sep = "_")
+```
+
+From these samples, we can make a corpus, one for each file. But we can also combine the three corpii into one big corpus consisting of the data of the three corpii together in one dataframe. 
+
+```{r corpus}
+#Make corpus from the dataset
+blogs_corpus <- corpus(blogs_sample)
+twitter_corpus <- corpus(twitter_sample)
+news_corpus <- corpus(news_sample)
+
+#Make one corpus out of the 3
+corp <- blogs_corpus + twitter_corpus + news_corpus
+length(corp$documents$texts)
+```
+
+Now we have made the corpii, we can make tokens. This means dataframes with one word per row. These tokens we clean by: 
+
+- Removing the punctuation: punctuation doesn't make sense to count how often they appear in the text
+- Remove the numbers: same as for punctuation, we don't want to count how often numbers appear in the text
+- Remove English stopwords: of course, stopwords like "and" and "the" will show up far the most, but that's not very interesting. So first we will delete stopwords, to clearly see which non-stopwords words are used the most often in the texts. 
+- Stem the tokens: this means we will not count words with the same base as 2 different words, but as the same words. 
+- Put every token into lowercase characters: this provides that we will treat all the words the same, no matter if they are written with lowercase or uppercase. 
+
+```{r tokens}
+#Creating tokens
+blogs.tokens <- tokens(blogs_corpus, remove_punct = TRUE, remove_numbers = TRUE) %>% 
+  tokens_select(stopwords('english'),selection='remove') %>% 
+  tokens_wordstem() %>% 
+  tokens_tolower()
+
+twitter.tokens <- tokens(twitter_corpus, remove_punct = TRUE, remove_numbers = TRUE) %>% 
+  tokens_select(stopwords('english'),selection='remove') %>% 
+  tokens_wordstem() %>% 
+  tokens_tolower()
+
+news.tokens <- tokens(news_corpus, remove_punct = TRUE, remove_numbers = TRUE) %>% 
+  tokens_select(stopwords('english'),selection='remove') %>% 
+  tokens_wordstem() %>% 
+  tokens_tolower()
+
+corp.tokens <- tokens(corp, remove_punct = TRUE, remove_numbers = TRUE) %>% 
+  tokens_select(stopwords('english'),selection='remove') %>% 
+  tokens_wordstem() %>% 
+  tokens_tolower()
+```
+
+To work easy with this corpus and to do some analysis, we create a document-feature-matrix. This is a matrix that describes the frequency of words that occur in the corpus, with one row per word The columns give the frequency of the words. 
+
+``` {r document-feature-matirx}
+#Creating document-feature-matrices
+dfm_blogs <- dfm(blogs.tokens)
+dfm_twitter <- dfm(twitter.tokens)
+dfm_news <- dfm(news.tokens)
+dfm_corp <- dfm(corp.tokens)
+
+my_dfm <- rbind(dfm_blogs, dfm_twitter, dfm_news)
+```
+
+## 4. Analysis with plots
+
+Now we have a document-feature-matrix and the tokens of the 3 files, we can easily calculate the words with the highest appearance in the tokens, thus also in the files. The next 3 histograms shows the 10 words that appear the most in blogs, news and twitter. 
+
+```{r histograms}
+par(mfrow= c(3,1))
+barplot(topfeatures(dfm_blogs, 10), col = "blue", main = "10 most frequent words in blogs", ylab = "count")
+barplot(topfeatures(dfm_twitter, 10), col = "blue", main = "10 most frequent words in tweets", ylab = "count")
+barplot(topfeatures(dfm_twitter, 10), col = "blue", main = "10 most frequent words in news", ylab = "count")
+```
+
+
+In a wordcloud we can nicely see the distribution of the words in the different files. Here we will use the comparison wordcloud, to compare the words in the three files in one wordcloud. 
+
+```{r wordcloud}
+#Wordcloud comparison between blogs-twitter-news
+dfm_corp %>%
+  dfm(groups = "type") %>%
+  dfm_trim(min_termfreq = 5, verbose = FALSE) %>%
+  textplot_wordcloud(comparison = TRUE, color = c("navy", "firebrick", "darkgreen"))
+```
+
+## 5. n-grams
+
+To prepare the model which can predict the next word, given some words, we will make n-grams of the data.  
+To make this n-grams, we first separate the texts in sentences, because we only have to predict a word within a sentence, and not over  a punctuation. Then all words become lowercase, and then we tokenize again per word and immediately make bigrams or trigrams. 
+
+```{r n-grams}
+#Create bigrams
+bigrams <- tokens(corp, remove_numbers = TRUE, what = "sentence") %>% 
+  tokens_tolower() %>% 
+  as.character() %>% 
+  tokens(ngrams = 2, remove_punct = TRUE, remove_numbers = TRUE) %>% 
+  as.character()
+
+#Create trigrams
+trigrams <- tokens(corp, remove_numbers = TRUE, what = "sentence") %>% 
+  tokens_tolower() %>% 
+  as.character() %>% 
+  tokens(ngrams = 3, remove_punct = TRUE, remove_numbers = TRUE) %>% 
+  as.character()
+```
+
+```{r dfm_ngrams}
+#Make a dfm from the bigrams and trigrams
+dfm_bigram <- dfm(bigrams)
+dfm_trigram <- dfm(trigrams)
+
+bigram_df <- colSums(dfm_bigram) %>% 
+  sort(decreasing = TRUE) 
+head(bigram_df)
+trigram_df <- colSums(dfm_trigram) %>% 
+  sort(decreasing = TRUE) 
+head(trigram_df)
+```
+
+Because we didn't delete the stopwords, the bigrams and trigrams that appear the most don't say so much. But we need the stopwords for the prediction. 
+
+## 6. Future plans
+
+For my prediction model, I will use the n-grams dataframes, to compute the likelihood that 2, 3 or 4 words occur in that order. 
+Given 3 words w1, w2, w3,  I would like to predict the word that comes immediately after these 3 words. With the likelihood, I will be able to compute probabilities, and finally choose the word that had to follow w1, w2 and w3 out of some given words. . Or even, I should be able to predict the next word, following w1, w2 and w3. How I will do this, I'll explain in the next assignment. 
